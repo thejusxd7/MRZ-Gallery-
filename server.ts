@@ -203,13 +203,8 @@ async function loadPersistedData() {
       const data = fs.readFileSync(MESSAGES_PATH, "utf-8");
       const rawMessages = JSON.parse(data);
       if (Array.isArray(rawMessages)) {
-        const allowed = ["mrz", "mrzadmin", "mrzmod"];
-        messages = rawMessages.filter((m: any) => {
-          const authName = (m.authorName || "").toLowerCase();
-          const authTag = (m.authorTag || "").toLowerCase().split("#")[0];
-          return allowed.includes(authName) || allowed.includes(authTag);
-        });
-        addLog("info", `Loaded and filtered ${messages.length} authorized messages from local cache.`);
+        messages = rawMessages;
+        addLog("info", `Loaded ${messages.length} messages from local cache.`);
         fs.writeFileSync(MESSAGES_PATH, JSON.stringify(messages, null, 2));
       } else {
         messages = [];

@@ -515,10 +515,6 @@ export default function App() {
                 <h1 className="text-sm font-black font-display tracking-widest text-amber-400 flex items-center gap-1.5 leading-none sm:text-base">
                   <span>MRZ GALLERY</span>
                 </h1>
-                <p className="text-[10px] sm:text-[11px] text-amber-200/50 font-medium mt-0.5 flex items-center gap-1.5 select-none">
-                  <span className={`inline-block w-2 h-2 rounded-full ${streamError ? "bg-red-500 animate-ping" : "bg-amber-500 animate-pulse-gold shadow-xs shadow-amber-405"}`} />
-                  <span>{streamError ? "Reconnecting..." : "Active stream synced"}</span>
-                </p>
               </div>
             </div>
 
