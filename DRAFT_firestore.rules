@@ -1,0 +1,124 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Global safety net - Default Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Security Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Bootstrap user's email as an administrator safely
+    function isAdmin() {
+      return isEmailVerified() && (
+        request.auth.token.email == "thejusxd7@gmail.com" ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // --- Validation Helper Blueprints ---
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'authorId', 'authorName', 'content', 'createdAt', 'channelId', 'channelName'])
+        && data.keys().size() <= 12
+        && data.id is string && data.id.size() <= 128
+        && data.authorId is string && data.authorId.size() <= 128
+        && data.authorName is string && data.authorName.size() <= 128
+        && data.content is string && data.content.size() <= 10000
+        && data.createdAt is string
+        && data.channelId is string && data.channelId.size() <= 128
+        && data.channelName is string && data.channelName.size() <= 128;
+    }
+
+    function isValidConfig(data) {
+      return data.keys().hasAll(['botToken', 'channelId'])
+        && data.keys().size() == 2
+        && data.botToken is string && data.botToken.size() <= 512
+        && data.channelId is string && data.channelId.size() <= 128;
+    }
+
+    function isValidLog(data) {
+      return data.keys().hasAll(['timestamp', 'level', 'message'])
+        && data.keys().size() == 3
+        && data.timestamp is string
+        && data.level is string && data.level.size() <= 16
+        && data.message is string && data.message.size() <= 4096;
+    }
+
+    // --- Collection Matching Blocks ---
+
+    match /messages/{messageId} {
+      allow read: if true;
+      
+      allow create: if (
+        isAdmin() && 
+        isValidId(messageId) && 
+        isValidMessage(request.resource.data)
+      );
+
+      allow update: if (
+        isAdmin() && 
+        isValidId(messageId) && 
+        isValidMessage(request.resource.data)
+      );
+
+      allow delete: if (
+        isAdmin() && 
+        isValidId(messageId)
+      );
+    }
+
+    match /config/{configId} {
+      allow read: if isAdmin() && isValidId(configId);
+      
+      allow create: if (
+        isAdmin() && 
+        isValidId(configId) && 
+        isValidConfig(request.resource.data)
+      );
+
+      allow update: if (
+        isAdmin() && 
+        isValidId(configId) && 
+        isValidConfig(request.resource.data)
+      );
+
+      allow delete: if (
+        isAdmin() && 
+        isValidId(configId)
+      );
+    }
+
+    match /logs/{logId} {
+      allow read: if isAdmin() && isValidId(logId);
+      
+      allow create: if (
+        isAdmin() && 
+        isValidId(logId) && 
+        isValidLog(request.resource.data)
+      );
+
+      allow update: if (
+        isAdmin() && 
+        isValidId(logId) && 
+        isValidLog(request.resource.data)
+      );
+
+      allow delete: if (
+        isAdmin() && 
+        isValidId(logId)
+      );
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "DiscordMessage": {
+      "title": "DiscordMessage",
+      "description": "A message synchronized from the allowed Discord authors",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorTag": { "type": "string" },
+        "authorAvatar": { "type": "string" },
+        "content": { "type": "string" },
+        "attachments": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "channelId": { "type": "string" },
+        "channelName": { "type": "string" }
+      },
+      "required": ["id", "authorId", "authorName", "content", "createdAt", "channelId", "channelName"]
+    },
+    "BotConfig": {
+      "title": "BotConfig",
+      "description": "Configuration info for the Discord bot listener",
+      "type": "object",
+      "properties": {
+        "botToken": { "type": "string" },
+        "channelId": { "type": "string" }
+      },
+      "required": ["botToken", "channelId"]
+    },
+    "LogEntry": {
+      "title": "LogEntry",
+      "description": "System event audit trail",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string" },
+        "level": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "required": ["timestamp", "level", "message"]
+    }
+  },
+  "firestore": {
+    "messages": {
+      "schema": "DiscordMessage",
+      "description": "Showcase board messages list synchronized from Discord"
+    },
+    "config": {
+      "schema": "BotConfig",
+      "description": "Persistent Bot config document"
+    },
+    "logs": {
+      "schema": "LogEntry",
+      "description": "Audit and error logs"
+    }
+  }
+}

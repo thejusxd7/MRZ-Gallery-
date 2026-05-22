@@ -1,0 +1,8 @@
+{
+  "name": "MRZ Gallery",
+  "description": "MRZ Gallery - Discord Live Synchronizer with Cloud Firestore Database persistent storage. Developed by Ark Graphics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
