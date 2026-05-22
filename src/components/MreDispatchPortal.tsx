@@ -151,34 +151,60 @@ export const MreDispatchPortal: React.FC<MreDispatchPortalProps> = ({
             })
           });
 
-          const resJson = await res.json();
-          if (res.ok && resJson.success) {
-            if (resJson.completed) {
-              setUploadedAttachment({
-                id: "att_upload_" + Date.now() + "_" + Math.floor(Math.random() * 100),
-                name: file.name,
-                url: resJson.url,
-                contentType: file.type || "application/octet-stream",
-                size: file.size
-              });
-              setUploadBytesTransferred(file.size);
-              setUploadProgress(100);
-              setIsUploading(false);
+          if (res.ok) {
+            const resJson = await res.json();
+            if (resJson.success) {
+              if (resJson.completed) {
+                setUploadedAttachment({
+                  id: "att_upload_" + Date.now() + "_" + Math.floor(Math.random() * 100),
+                  name: file.name,
+                  url: resJson.url,
+                  contentType: file.type || "application/octet-stream",
+                  size: file.size
+                });
+                setUploadBytesTransferred(file.size);
+                setUploadProgress(100);
+                setIsUploading(false);
+              } else {
+                currentChunk++;
+                const actualSent = Math.min(currentChunk * CHUNK_SIZE, file.size);
+                setUploadBytesTransferred(actualSent);
+                setUploadProgress(Math.round((actualSent / file.size) * 100));
+                transferNextChunkOfBytes();
+              }
             } else {
-              currentChunk++;
-              const actualSent = Math.min(currentChunk * CHUNK_SIZE, file.size);
-              setUploadBytesTransferred(actualSent);
-              setUploadProgress(Math.round((actualSent / file.size) * 100));
-              transferNextChunkOfBytes();
+              setPovError(resJson.error || "Chunk transfer denied. Verify authorization states.");
+              setIsUploading(false);
             }
           } else {
-            setPovError(resJson.error || "Chunk transfer denied. Verify authorization states.");
-            setIsUploading(false);
+            console.warn("Upload API responded negatively, falling back to local Base64 encoding...");
+            runLocalBase64Fallback();
           }
         } catch (connectionError) {
-          setPovError("Network transit failure during chunk delegation.");
-          setIsUploading(false);
+          console.warn("Network transit failure, falling back to local Base64 encoding...");
+          runLocalBase64Fallback();
         }
+      };
+
+      const runLocalBase64Fallback = () => {
+        const fallbackReader = new FileReader();
+        fallbackReader.onload = () => {
+          setUploadedAttachment({
+            id: "att_offline_" + Date.now() + "_" + Math.floor(Math.random() * 100),
+            name: file.name,
+            url: fallbackReader.result as string,
+            contentType: file.type || "application/octet-stream",
+            size: file.size
+          });
+          setUploadBytesTransferred(file.size);
+          setUploadProgress(100);
+          setIsUploading(false);
+        };
+        fallbackReader.onerror = () => {
+          setPovError("Buffer reader triggered filesystem access error.");
+          setIsUploading(false);
+        };
+        fallbackReader.readAsDataURL(file);
       };
 
       fileSegmentReader.onerror = () => {
