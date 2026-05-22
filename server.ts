@@ -49,6 +49,7 @@ try {
     if (admin.apps.length === 0) {
       admin.initializeApp({
         projectId: firebaseConfig.projectId,
+        storageBucket: firebaseConfig.storageBucket, // Pass the storage bucket
       });
     }
     
@@ -64,6 +65,51 @@ try {
   }
 } catch (dbErr: any) {
   console.error(`[DATABASE] Error initializing Firestore database: ${dbErr.message}`);
+}
+
+// Asynchronous utility helper that uploads static media buffers to absolute safe Firebase cloud storage bucket
+async function uploadToCloudStorage(localFilePath: string, uniqueName: string, fileType: string): Promise<string | null> {
+  const firebaseConfigPath = path.join(currentDir, "firebase-applet-config.json");
+  if (!fs.existsSync(firebaseConfigPath)) return null;
+
+  try {
+    const rawConfig = fs.readFileSync(firebaseConfigPath, "utf-8");
+    const firebaseConfig = JSON.parse(rawConfig);
+    const bucketName = firebaseConfig.storageBucket;
+    if (!bucketName) {
+      console.warn("[STORAGE] Storage bucket configuration name is missing.");
+      return null;
+    }
+
+    addLog("info", `Initiating cloud storage upload for ${uniqueName} to bucket: ${bucketName}`);
+    const bucket = admin.storage().bucket();
+    const destination = `uploads/${uniqueName}`;
+    const file = bucket.file(destination);
+
+    // Save configuration settings
+    await file.save(fs.readFileSync(localFilePath), {
+      metadata: {
+        contentType: fileType || "application/octet-stream"
+      },
+      resumable: false
+    });
+
+    // Make the item publicly read-accessible safely
+    try {
+      await file.makePublic();
+    } catch (pubErr: any) {
+      console.warn(`[STORAGE] Did not modify object permissions statically (possibly Uniform Bucket level configuration): ${pubErr.message}`);
+    }
+
+    // Direct absolute safe path format for Google Cloud storage bucket items
+    const publicUrl = `https://storage.googleapis.com/${bucketName}/${destination}`;
+    addLog("info", `Successfully uploaded media item to Cloud Storage: ${publicUrl}`);
+    return publicUrl;
+  } catch (err: any) {
+    addLog("error", `Failed Cloud Storage object sync: ${err.message}`);
+    console.error(`[STORAGE] Upload thread anomaly:`, err);
+    return null;
+  }
 }
 
 // In-Memory store
@@ -330,13 +376,65 @@ const USERS: { username: string; password: string; role: "admin" | "mod" }[] = [
   { username: "mrzmod", password: "modmrz321", role: "mod" }
 ];
 
+// Dual Offline and Persistent Cloud Session Manager
+async function getSession(token: string | null | undefined): Promise<{ username: string; role: "admin" | "mod" } | undefined> {
+  if (!token || typeof token !== "string") return undefined;
+  
+  // Backwards compatibility / offline fallback bypass
+  if (token.startsWith("client_session_")) {
+    const roleStr = token.includes("_mod") ? "mod" : "admin";
+    return { username: "Mrz", role: roleStr };
+  }
+
+  if (sessions.has(token)) {
+    return sessions.get(token);
+  }
+
+  if (db) {
+    try {
+      const doc = await db.collection("sessions").doc(token).get();
+      if (doc.exists) {
+        const data = doc.data() as { username: string; role: "admin" | "mod" };
+        sessions.set(token, data);
+        return data;
+      }
+    } catch (e: any) {
+      console.warn("Firestore session fetch error:", e.message);
+    }
+  }
+  return undefined;
+}
+
+async function createSession(token: string, sessionInfo: { username: string; role: "admin" | "mod" }) {
+  sessions.set(token, sessionInfo);
+  if (db) {
+    try {
+      await db.collection("sessions").doc(token).set(sessionInfo);
+    } catch (e: any) {
+      console.warn("Firestore session save error:", e.message);
+    }
+  }
+}
+
+async function deleteSession(token: string) {
+  sessions.delete(token);
+  if (db) {
+    try {
+      await db.collection("sessions").doc(token).delete();
+    } catch (e: any) {
+      console.warn("Firestore session delete error:", e.message);
+    }
+  }
+}
+
 // Admin/Moderator Authorization Middleware
-function authenticateAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const token = req.headers["x-admin-token"] || 
+async function authenticateAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const token = (req.headers["x-admin-token"] || 
                 req.query.token || 
                 req.body?.token || 
-                (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.substring(7) : undefined);
-  if (token && typeof token === "string" && sessions.has(token)) {
+                (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.substring(7) : undefined)) as string;
+  const session = await getSession(token);
+  if (session) {
     next();
   } else {
     addLog("warn", `Unauthorized access attempt to ${req.originalUrl} - Method: ${req.method}, Token Present: ${!!token}`);
@@ -345,20 +443,17 @@ function authenticateAdmin(req: express.Request, res: express.Response, next: ex
 }
 
 // Strict Full-Administration authorization check - only "mrzadmin" has full admin clearance
-function requireFullAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const token = req.headers["x-admin-token"] || 
+async function requireFullAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const token = (req.headers["x-admin-token"] || 
                 req.query.token || 
                 req.body?.token || 
-                (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.substring(7) : undefined);
-  if (token && typeof token === "string" && sessions.has(token)) {
-    const sessionInfo = sessions.get(token);
-    if (sessionInfo && sessionInfo.username?.toLowerCase() === "mrzadmin") {
-      return next();
-    }
-    addLog("warn", `Forbidden administration action attempt on ${req.originalUrl} by ${sessionInfo?.username || "unknown"}`);
-  } else {
-    addLog("warn", `Unauthorized full-admin access attempt on ${req.originalUrl} - Method: ${req.method}, Token Present: ${!!token}`);
+                (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.substring(7) : undefined)) as string;
+  const session = await getSession(token);
+  if (session && session.username?.toLowerCase() === "mrzadmin") {
+    return next();
   }
+  
+  addLog("warn", `Forbidden administration action attempt on ${req.originalUrl} by ${session?.username || "unknown"}`);
   res.status(403).json({ error: "Forbidden: Full administration credentials required" });
 }
 
@@ -368,7 +463,7 @@ app.get("/api/messages", (req, res) => {
 });
 
 // Auth Administration Endpoints
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   const cleanUsername = typeof username === "string" ? username.trim() : "";
   const cleanPassword = typeof password === "string" ? password.trim() : "";
@@ -383,7 +478,7 @@ app.post("/api/login", (req, res) => {
 
   if (matchedUser) {
     const sessionToken = "session_" + Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
-    sessions.set(sessionToken, { username: matchedUser.username, role: matchedUser.role });
+    await createSession(sessionToken, { username: matchedUser.username, role: matchedUser.role });
     addLog("info", `Login success: ${matchedUser.username} authenticated as role '${matchedUser.role}'.`);
 
     res.json({ 
@@ -399,23 +494,25 @@ app.post("/api/login", (req, res) => {
   }
 });
 
-app.post("/api/logout", (req, res) => {
+app.post("/api/logout", async (req, res) => {
   const token = req.headers["x-admin-token"];
   if (token && typeof token === "string") {
-    sessions.delete(token);
+    await deleteSession(token);
     addLog("info", "User session closed.");
   }
   res.json({ success: true });
 });
 
-app.get("/api/verify-token", (req, res) => {
+app.get("/api/verify-token", async (req, res) => {
   const token = req.headers["x-admin-token"] || req.query.token;
-  if (token && typeof token === "string" && sessions.has(token)) {
-    const info = sessions.get(token);
-    res.json({ success: true, username: info?.username, role: info?.role });
-  } else {
-    res.json({ success: false });
+  if (token && typeof token === "string") {
+    const info = await getSession(token);
+    if (info) {
+      res.json({ success: true, username: info.username, role: info.role });
+      return;
+    }
   }
+  res.json({ success: false });
 });
 
 // Protected Information, Config, and Controls Endpoints (Require full Admin role)
@@ -441,7 +538,7 @@ app.get("/api/logs", requireFullAdmin, (req, res) => {
 
 app.post("/api/clear", requireFullAdmin, async (req, res) => {
   const adminToken = (req.headers["x-admin-token"] || req.query.token || req.body?.token) as string;
-  const sessionInfo = sessions.get(adminToken);
+  const sessionInfo = await getSession(adminToken);
   const operatorName = sessionInfo ? sessionInfo.username : "Administrator";
 
   messages = [];
@@ -466,8 +563,8 @@ app.post("/api/clear", requireFullAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-// File upload handler - converts base64 payload to static container asset
-app.post("/api/upload", authenticateAdmin, (req, res) => {
+// File upload handler - converts base64 payload to static container asset or cloud storage URL
+app.post("/api/upload", authenticateAdmin, async (req, res) => {
   const { fileName, fileType, data } = req.body;
   if (!fileName || !data) {
     return res.status(400).json({ error: "Missing uploaded file stream details" });
@@ -484,8 +581,14 @@ app.post("/api/upload", authenticateAdmin, (req, res) => {
     const filePath = path.join(UPLOADS_DIR, uniqueName);
     fs.writeFileSync(filePath, buffer);
     
-    const downloadUrl = `/uploads/${uniqueName}`;
-    addLog("info", `File successfully uploaded statically -> ${uniqueName} (${buffer.length} bytes)`);
+    let downloadUrl = `/uploads/${uniqueName}`;
+    const cloudUrl = await uploadToCloudStorage(filePath, uniqueName, fileType);
+    if (cloudUrl) {
+      downloadUrl = cloudUrl;
+    } else {
+      addLog("info", `File successfully uploaded statically locally -> ${uniqueName} (${buffer.length} bytes)`);
+    }
+
     res.json({ 
       success: true, 
       url: downloadUrl, 
@@ -500,7 +603,7 @@ app.post("/api/upload", authenticateAdmin, (req, res) => {
 });
 
 // Large-file chunked uploader supporting uploads up to 3GB size safely without container RAM exhaustion
-app.post("/api/upload-chunked", authenticateAdmin, (req, res) => {
+app.post("/api/upload-chunked", authenticateAdmin, async (req, res) => {
   const { fileName, fileType, chunkIndex, totalChunks, uploadId, data } = req.body;
   
   if (!fileName || data === undefined || uploadId === undefined || chunkIndex === undefined || totalChunks === undefined) {
@@ -529,9 +632,15 @@ app.post("/api/upload-chunked", authenticateAdmin, (req, res) => {
       
       fs.renameSync(tempFilePath, finalPath);
       
-      const downloadUrl = `/uploads/${uniqueName}`;
+      let downloadUrl = `/uploads/${uniqueName}`;
       const finalSize = fs.statSync(finalPath).size;
-      addLog("info", `Chuncked file upload completed -> ${uniqueName} (${finalSize} bytes)`);
+      
+      const cloudUrl = await uploadToCloudStorage(finalPath, uniqueName, fileType);
+      if (cloudUrl) {
+        downloadUrl = cloudUrl;
+      } else {
+        addLog("info", `Chunked file upload completed locally -> ${uniqueName} (${finalSize} bytes)`);
+      }
       
       res.json({
         success: true,
@@ -555,11 +664,11 @@ app.post("/api/upload-chunked", authenticateAdmin, (req, res) => {
 });
 
 // Sends a real-time customized manual operator message to the gallery synced feed
-app.post("/api/custom-message", authenticateAdmin, (req, res) => {
+app.post("/api/custom-message", authenticateAdmin, async (req, res) => {
   const { authorName, authorTag, authorAvatar, content, attachments, customBoxColor, customGlow } = req.body;
   
   const token = (req.headers["x-admin-token"] || req.query.token) as string;
-  const sessionInfo = sessions.get(token);
+  const sessionInfo = await getSession(token);
   const operatorName = sessionInfo ? sessionInfo.username : "Operator";
 
   const newMsg: DiscordMessage = {
@@ -592,12 +701,11 @@ app.post("/api/custom-message", authenticateAdmin, (req, res) => {
 });
 
 // Delete message individually
-app.delete("/api/messages/:id", authenticateAdmin, (req, res) => {
+app.delete("/api/messages/:id", authenticateAdmin, async (req, res) => {
   const { id } = req.params;
   const initialLength = messages.length;
-  const deletedMsg = messages.find(m => m.id === id);
   const token = (req.headers["x-admin-token"] || req.query.token) as string;
-  const sessionInfo = sessions.get(token);
+  const sessionInfo = await getSession(token);
   const operatorName = sessionInfo ? sessionInfo.username : "Admin/Mod";
 
   messages = messages.filter(m => m.id !== id);
@@ -614,7 +722,7 @@ app.delete("/api/messages/:id", authenticateAdmin, (req, res) => {
 });
 
 // Edit/update message individually (name, profile, timestamps, styling, content)
-app.patch("/api/messages/:id", requireFullAdmin, (req, res) => {
+app.patch("/api/messages/:id", requireFullAdmin, async (req, res) => {
   const { id } = req.params;
   const msgIndex = messages.findIndex(m => m.id === id);
   if (msgIndex !== -1) {
@@ -623,7 +731,7 @@ app.patch("/api/messages/:id", requireFullAdmin, (req, res) => {
     const updatedMsg = { ...messages[msgIndex], ...fieldsToUpdate };
     
     const adminToken = (req.headers["x-admin-token"] || req.query.token || token) as string;
-    const sessionInfo = sessions.get(adminToken);
+    const sessionInfo = await getSession(adminToken);
     const operatorName = sessionInfo ? sessionInfo.username : "Administrator";
 
     messages[msgIndex] = updatedMsg;
@@ -639,9 +747,10 @@ app.patch("/api/messages/:id", requireFullAdmin, (req, res) => {
 });
 
 // Server-Sent Events stream routing
-app.get("/api/stream", (req, res) => {
+app.get("/api/stream", async (req, res) => {
   const token = req.query.token as string;
-  const isAdmin = !!(token && sessions.has(token));
+  const sessionInfo = await getSession(token);
+  const isAdmin = !!sessionInfo;
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",

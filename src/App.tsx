@@ -345,12 +345,35 @@ export default function App() {
 
     connectToEventStream();
 
+    // Background polling fallback for robust synchronization in serverless/Vercel/disconnected hosting environments
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/messages");
+        if (res.ok) {
+          const msgs = await res.json();
+          setMessages((prev) => {
+            // Prevent state churn if the lists are identical
+            if (JSON.stringify(prev) !== JSON.stringify(msgs)) {
+              localStorage.setItem("mrz_messages_backup", JSON.stringify(msgs));
+              return msgs;
+            }
+            return prev;
+          });
+        }
+      } catch (err) {
+        console.warn("Background backup sync check:", err);
+      }
+    }, 8000);
+
     return () => {
       if (eventSource) {
         eventSource.close();
       }
       if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
+      }
+      if (pollInterval) {
+        clearInterval(pollInterval);
       }
     };
   }, [adminToken]);
